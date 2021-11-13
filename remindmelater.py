@@ -225,6 +225,8 @@ def help_message(update: Update, context: CallbackContext):
                               "/check <DD.MM> - outputs all reminders from a certain date\n"
                               "/all - outputs all reminders from all dates\n"
                               "/timer <HH:MM> <content> - creates a timed message\n"
+                              "/timer_check - checks the contents of all timed messages\n"
+                              "/timer_stop - stops all active timed messages\n"
                               "/help - this command")
 
 
@@ -240,7 +242,7 @@ def set_timed_message(update: Update, context: CallbackContext):
         time_str = context.args[0]
         content_args = context.args[1]
         for s in context.args[2:]:
-            content_args += (s + " ")
+            content_args += (" " + s)
         if check_validity_of_time_string(time_str):
             time = datetime.strptime(time_str, "%H:%M")
             time = timedelta(hours=time.hour, minutes=time.minute)
@@ -249,12 +251,33 @@ def set_timed_message(update: Update, context: CallbackContext):
                                        (context.user_data['chat_id'], content_args),
                                        name=str(context.user_data['chat_id'])+'-once')
             update.message.reply_text("Created a timed message about " + content_args
-                                      + " that will run in " + str(time.total_seconds()) + " seconds from now")
+                                      + " that will run in " + str(int(time.total_seconds())) + " seconds from now")
         else:
             update.message.reply_text("Couldn't parse the time, sorry")
             raise ValueError
     except (ValueError, IndexError):
-        update.message.reply_text("Usage: /timed <HH:MM> <content>")
+        update.message.reply_text("Usage: /timer <HH:MM> <content>")
+
+
+def check_all_timers(update: Update, context: CallbackContext):
+    """ Outputs the context of all active run_once jobs. """
+    if not context.job.job_queue.get_jobs_by_name(context.user_data['chat_id']+'-once'):
+        update.message.reply_text("You don't have any active timers")
+        return None
+    string = "Here is everything you planned using /timer: \n"
+    for job in context.job_queue.get_jobs_by_name(context.user_data['chat_id']+'-once'):
+        string += "\n" + job.context[1]
+    update.message.reply_text(string)
+    return None
+
+
+def stop_all_timers(update: Update, context: CallbackContext):
+    """ Kills all active run_once jobs. """
+    removed = remove_job_if_exists(context.user_data['chat_id']+'-once', context)
+    if removed:
+        update.message.reply_text("Removed all active timed messages")
+    else:
+        update.message.reply_text("You don't have any active timed messages")
 
 
 def main():
@@ -263,7 +286,7 @@ def main():
     updater = Updater(secret.http_api, persistence=data_persistence, use_context=True)
     dispatcher = updater.dispatcher
 
-    updater.job_queue.run_repeating(save_job, timedelta(seconds=5), context=updater.job_queue)
+    updater.job_queue.run_repeating(save_job, timedelta(seconds=30), context=updater.job_queue)
     try:
         load_jobs_from_pickle(updater.job_queue)
     except FileNotFoundError:
@@ -278,6 +301,8 @@ def main():
     dispatcher.add_handler(CommandHandler("del", delete_reminders_on_day))
     dispatcher.add_handler(CommandHandler("check", check_reminders_on_day))
     dispatcher.add_handler(CommandHandler("timer", set_timed_message))
+    dispatcher.add_handler(CommandHandler("timer_check", check_all_timers))
+    dispatcher.add_handler(CommandHandler("timer_stop", stop_all_timers))
 
     updater.start_polling()
     updater.idle()
