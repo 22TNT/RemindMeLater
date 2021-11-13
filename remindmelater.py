@@ -1,13 +1,9 @@
-import os
-import sys
-from time import time
 import pickle
 import logging
 from datetime import datetime, timezone, timedelta
 
-import telegram.ext
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, PicklePersistence, CallbackContext, Job, JobQueue
+from telegram.ext import Updater, CommandHandler, PicklePersistence, CallbackContext, JobQueue
 import pytz
 
 import secret
@@ -27,40 +23,46 @@ JOB_DATA = ('callback', 'next_t', 'context', 'name')
 
 
 def save_jobs_to_pickle(context):
+    """ Pickles all active jobs into JOBS_FILE. """
     if isinstance(context, CallbackContext):
         jobs = context.job.context.jobs()
     else:
         jobs = context.jobs()
     with open(JOBS_FILE, "wb") as f:
         for job in jobs:
-            if job.name == 'save_job':
-                continue
-
-            data = tuple(getattr(job, attr) for attr in JOB_DATA)
-
-            pickle.dump(data, f)
+            if job.name != 'save_job':
+                data = tuple(getattr(job, attr) for attr in JOB_DATA)
+                pickle.dump(data, f)
 
 
 def load_jobs_from_pickle(queue: JobQueue):
+    """ Unpickles jobs from JOBS_FILE and creates new jobs with given arguments. """
     with open(JOBS_FILE, 'rb') as f:
         while 1:
             try:
                 data = pickle.load(f)
-                queue.run_daily(data[0], data[1], context=data[2], name=data[3])
+                args = [x for x in data]
+                if args[3].endswith("-once"):
+                    queue.run_once(data[0], data[1], context=data[2], name=data[3])
+                else:
+                    queue.run_daily(data[0], data[1], context=data[2], name=data[3])
             except EOFError:
                 break
 
 
 def save_job(context):
+    """ Wrapper for save_jobs_to_pickle(). """
     save_jobs_to_pickle(context)
 
 
 def start(update: Update, context: CallbackContext):
     """ Sends a message when the /start command is used. """
-    user = update.effective_user
-    update.message.reply_markdown_v2(
-        fr'Hi {user.mention_markdown_v2()}\!',
-    )
+    context.user_data.update({'chat_id': update.message.chat_id})
+    context.user_data.update({'timezone': pytz.UTC})
+    update.message.reply_text("Hi! I'm RemindPy, a bot to help you keep track of things.")
+    update.message.reply_text("First, use /set_timezone to, well, set your timezone!")
+    update.message.reply_text("After that, just use /set_time to set the time of your daily reminder " +
+                              "and /add to add new reminders. \nYou can check out other commands with /help")
 
 
 def remove_job_if_exists(name: str, context: CallbackContext):
@@ -129,18 +131,23 @@ def reminder(context: CallbackContext):
     """ Callback for the daily reminder function. """
     date_str = datetime.now(context.job.context["timezone"]).strftime("%d.%m")
     if date_str in context.job.context:
-        context.bot.send_message(int(context.job.name), notes_to_str(date_str, context.job.context[date_str]))
+        context.bot.send_message(context.job.context['chat_id'], notes_to_str(date_str, context.job.context[date_str]))
+        context.job.context.pop(date_str)
 
 
 def output_all_reminders(update: Update, context: CallbackContext):
+    """ Sends all reminders to the user. """
+    f = False
     for k, v in context.user_data.items():
-        if k == 'timezone':
-            continue
-        update.message.reply_text(notes_to_str(k, v))
+        if check_validity_of_date_string(k):
+            f = True
+            update.message.reply_text(notes_to_str(k, v))
+    if not f:
+        update.message.reply_text("You don't have any reminders")
 
 
 def set_timezone_offset(update: Update, context: CallbackContext):
-    """ Sets the timezone offset for a user and saves it to context.user_data. """
+    """ Sets the timezone offset for a user and saves it to context.user_data["timezone"]. """
     try:
         tz_str = context.args[0]
         try:
@@ -150,7 +157,8 @@ def set_timezone_offset(update: Update, context: CallbackContext):
             update.message.reply_text("Couldn't parse the timezone, sorry!")
             raise ValueError from None
         context.user_data.update({"timezone": tz_offset})
-        update.message.reply_text("Timezone set to " + str(context.user_data["timezone"]))
+        update.message.reply_text("Timezone set to " + str(context.user_data["timezone"]) +
+                                  "\nWe advise you to /set_time again, just to be sure")
 
     except (ValueError, IndexError):
         update.message.reply_text("Usage: /set_timezone <+HH>")
@@ -175,13 +183,87 @@ def set_time_for_reminder(update: Update, context: CallbackContext):
         update.message.reply_text("Usage: /set_time <HH:MM>")
 
 
+def delete_reminders_on_day(update: Update, context: CallbackContext):
+    """ Deletes all reminders on a certain day. """
+    try:
+        del_date_args = context.args[0]
+        if check_validity_of_date_string(del_date_args):
+            if del_date_args in context.user_data:
+                context.user_data.pop(del_date_args)
+                update.message.reply_text("Successfully deleted all reminders on " + del_date_args)
+            else:
+                update.message.reply_text("No reminders that day anyway")
+        else:
+            update.message.reply_text("Couldn't parse the date, sorry!")
+
+    except (ValueError, IndexError):
+        update.message.reply_text("Usage: /del <DD.MM>")
+
+
+def check_reminders_on_day(update: Update, context: CallbackContext):
+    """ Outputs all reminders on a day, or prints out that there are no reminders on that day. """
+    try:
+        check_date_args = context.args[0]
+        if check_validity_of_date_string(check_date_args):
+            if check_date_args in context.user_data:
+                update.message.reply_text(notes_to_str(check_date_args, context.user_data[check_date_args]))
+            else:
+                update.message.reply_text("Nothing planned on " + check_date_args)
+        else:
+            update.message.reply_text("Couldn't parse the date, sorry!")
+    except (ValueError, IndexError):
+        update.message.reply_text("Usage: /check <DD.MM>")
+
+
+def help_message(update: Update, context: CallbackContext):
+    """ Outputs a list of all available commands and their syntax. """
+    update.message.reply_text("Here are all available commands:\n"
+                              "/set_timezone <HH> - sets your timezone to a certain offset from UTC\n"
+                              "/set_time <HH:MM> - sets your daily reminder time\n"
+                              "/add <DD.MM> <content> - adds a reminder to a certain date\n"
+                              "/del <DD.MM> - deletes all reminders on a certain date\n"
+                              "/check <DD.MM> - outputs all reminders from a certain date\n"
+                              "/all - outputs all reminders from all dates\n"
+                              "/timer <HH:MM> <content> - creates a timed message\n"
+                              "/help - this command")
+
+
+def run_timed_message(context: CallbackContext):
+    """ Callback function for set_timed_message(). """
+    context.bot.send_message(context.job.context[0], text="You asked to remind you about "
+                             + str(context.job.context[1]))
+
+
+def set_timed_message(update: Update, context: CallbackContext):
+    """ Creates a job that outputs a user-defined message in a certain time. """
+    try:
+        time_str = context.args[0]
+        content_args = context.args[1]
+        for s in context.args[2:]:
+            content_args += (s + " ")
+        if check_validity_of_time_string(time_str):
+            time = datetime.strptime(time_str, "%H:%M")
+            time = timedelta(hours=time.hour, minutes=time.minute)
+            context.job_queue.run_once(run_timed_message,
+                                       datetime.now(pytz.UTC) + time,
+                                       (context.user_data['chat_id'], content_args),
+                                       name=str(context.user_data['chat_id'])+'-once')
+            update.message.reply_text("Created a timed message about " + content_args
+                                      + " that will run in " + str(time.total_seconds()) + " seconds from now")
+        else:
+            update.message.reply_text("Couldn't parse the time, sorry")
+            raise ValueError
+    except (ValueError, IndexError):
+        update.message.reply_text("Usage: /timed <HH:MM> <content>")
+
+
 def main():
     """ Starts the bot. """
     data_persistence = PicklePersistence(filename=DATA_FILE)
     updater = Updater(secret.http_api, persistence=data_persistence, use_context=True)
     dispatcher = updater.dispatcher
 
-    updater.job_queue.run_repeating(save_job, timedelta(seconds=30), context=updater.job_queue)
+    updater.job_queue.run_repeating(save_job, timedelta(seconds=5), context=updater.job_queue)
     try:
         load_jobs_from_pickle(updater.job_queue)
     except FileNotFoundError:
@@ -192,11 +274,13 @@ def main():
     dispatcher.add_handler(CommandHandler("add", add_new_reminder))
     dispatcher.add_handler(CommandHandler("all", output_all_reminders))
     dispatcher.add_handler(CommandHandler("set_timezone", set_timezone_offset))
+    dispatcher.add_handler(CommandHandler("help", help_message))
+    dispatcher.add_handler(CommandHandler("del", delete_reminders_on_day))
+    dispatcher.add_handler(CommandHandler("check", check_reminders_on_day))
+    dispatcher.add_handler(CommandHandler("timer", set_timed_message))
 
     updater.start_polling()
     updater.idle()
-
-    save_jobs_to_pickle(updater.job_queue)
 
 
 if __name__ == "__main__":
