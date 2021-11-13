@@ -261,11 +261,11 @@ def set_timed_message(update: Update, context: CallbackContext):
 
 def check_all_timers(update: Update, context: CallbackContext):
     """ Outputs the context of all active run_once jobs. """
-    if not context.job.job_queue.get_jobs_by_name(context.user_data['chat_id']+'-once'):
+    if not context.job_queue.get_jobs_by_name(str(context.user_data['chat_id'])+'-once'):
         update.message.reply_text("You don't have any active timers")
         return None
     string = "Here is everything you planned using /timer: \n"
-    for job in context.job_queue.get_jobs_by_name(context.user_data['chat_id']+'-once'):
+    for job in context.job_queue.get_jobs_by_name(str(context.user_data['chat_id'])+'-once'):
         string += "\n" + job.context[1]
     update.message.reply_text(string)
     return None
@@ -273,7 +273,7 @@ def check_all_timers(update: Update, context: CallbackContext):
 
 def stop_all_timers(update: Update, context: CallbackContext):
     """ Kills all active run_once jobs. """
-    removed = remove_job_if_exists(context.user_data['chat_id']+'-once', context)
+    removed = remove_job_if_exists(str(context.user_data['chat_id'])+'-once', context)
     if removed:
         update.message.reply_text("Removed all active timed messages")
     else:
