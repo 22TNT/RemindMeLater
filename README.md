@@ -1,6 +1,6 @@
 # RemindMeLater
 
-A bot to help you remember stuff. Made as a college project using [PTB](github.com/python-telegram-bot/python-telegram-bot). 
+A bot to help you remember stuff. Made as a college project using [PTB](http://github.com/python-telegram-bot/python-telegram-bot). 
 
 
 # Versions
